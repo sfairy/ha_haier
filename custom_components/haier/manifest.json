@@ -1,0 +1,15 @@
+{
+  "domain": "haier",
+  "name": "海尔智家",
+  "version": "2.0.0",
+  "documentation": "https://github.com/sfairy/ha_haier",
+  "issue_tracker": "https://github.com/sfairy/ha_haier/issues",
+  "codeowners": [
+    "@sfairy"
+  ],
+  "config_flow": true,
+  "integration_type": "hub",
+  "iot_class": "cloud_polling",
+  "requirements": [],
+  "dependencies": []
+}
