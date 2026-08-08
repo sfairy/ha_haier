@@ -4,7 +4,6 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 [![GitHub release](https://img.shields.io/github/release/sfairy/ha_haier.svg)](https://github.com/sfairy/ha_haier/releases)
-[![Validate](https://github.com/sfairy/ha_haier/actions/workflows/validate.yml/badge.svg)](https://github.com/sfairy/ha_haier/actions/workflows/validate.yml)
 
 ## 功能
 
