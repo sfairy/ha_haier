@@ -353,151 +353,29 @@ class HaierClient:
             return content['agAddr'].replace('http://', 'wss://')
 
     @staticmethod
-    def _raise_if_stats_unauthorized(content: dict, context: str):
+    def _is_stats_unauthorized(content: dict) -> bool:
         ret_code = str(content.get('retCode', ''))
         ret_info = content.get('retInfo')
-        if ret_code in ('10401', '401') or str(ret_info).upper() == 'UNAUTHORIZED':
-            raise HaierUnauthorizedException(
-                f'{context} unauthorized (retCode={ret_code}, retInfo={ret_info}). '
-                'Check Access User Token / app source match for bigdata APIs.'
-            )
+        return ret_code in ('10401', '401') or str(ret_info).upper() == 'UNAUTHORIZED'
 
-    @retry_on_exception(exceptions=(aiohttp.ClientError, asyncio.TimeoutError))
-    async def get_consumption_data(self, device_id: str, api: str) -> dict:
-        payload = {
-            'mac': device_id
-        }
-
-        headers = await self._generate_stats_headers(api, json.dumps(payload))
-        _LOGGER.debug(
-            'STATS REQUEST: %s payload=%s headers=%s',
-            api, json.dumps(payload), _redact_headers(headers),
-        )
-        async with self._session.post(url=api, json=payload, headers=headers) as response:
-            text = await response.text()
-            _LOGGER.debug(
-                'STATS RESPONSE: status=%d body_len=%d text=%s',
-                response.status, len(text), text[:300] if text else '(empty)',
-            )
-            if not text:
-                return {'indexList': [], 'unit': None}
-
-            content = json.loads(text)
-            _LOGGER.debug(
-                'STATS PARSED: retCode=%s data_count=%d',
-                content.get('retCode'), len(content.get('data') or []),
-            )
-            self._raise_if_stats_unauthorized(content, 'consumption')
-            if content.get('retCode') != '1000':
-                raise HaierClientException('Error getting consumption data: {}'.format(content.get('retInfo')))
-
-            if not content.get('data'):
-                return {'indexList': [], 'unit': None}
-
-            return {
-                'indexList': content['data'][0].get('indexList', []),
-                'unit': content['data'][0].get('unit')
-            }
-
-    @retry_on_exception(exceptions=(aiohttp.ClientError, asyncio.TimeoutError))
-    async def get_monthly_consumption_data(self, device_id: str, api: str, month: str = None) -> dict:
-        if month is None:
-            from datetime import datetime
-            now = datetime.now()
-            month = now.strftime('%Y%m')
-
-        payload = {
-            'mac': device_id,
-            'month': month
-        }
-
-        headers = await self._generate_stats_headers(api, json.dumps(payload))
-        _LOGGER.debug(
-            'MONTHLY STATS REQUEST: %s payload=%s headers=%s',
-            api, json.dumps(payload), _redact_headers(headers),
-        )
-        async with self._session.post(url=api, json=payload, headers=headers) as response:
-            text = await response.text()
-            _LOGGER.debug(
-                'MONTHLY STATS RESPONSE: status=%d body_len=%d text=%s',
-                response.status, len(text), text[:300] if text else '(empty)',
-            )
-            if not text:
-                return {'waterConsumption': 0, 'gasConsumption': 0, 'month': month}
-
-            content = json.loads(text)
-            _LOGGER.debug('MONTHLY STATS PARSED: retCode=%s', content.get('retCode'))
-            self._raise_if_stats_unauthorized(content, 'monthly consumption')
-            if content.get('retCode') != '1000':
-                raise HaierClientException('Error getting monthly consumption data: {}'.format(content.get('retInfo')))
-
-            if not content.get('data') or not content['data'][0].get('indexList'):
-                return {'waterConsumption': 0, 'gasConsumption': 0, 'month': month}
-
-            index_item = content['data'][0]['indexList'][0]
-            return {
-                'waterConsumption': float(index_item.get('waterConsumption', 0)),
-                'gasConsumption': float(index_item.get('gasConsumption', 0)),
-                'month': index_item.get('statisticsDt', month)
-            }
-
-    @retry_on_exception(exceptions=(aiohttp.ClientError, asyncio.TimeoutError))
-    async def get_yearly_monthly_consumption(self, device_id: str, api: str) -> list:
-        from datetime import datetime
-        now = datetime.now()
-        monthly_data = []
-
-        for i in range(12):
-            target_date = now - relativedelta(months=i)
-            month_str = target_date.strftime('%Y%m')
-
-            payload = {
-                'mac': device_id,
-                'month': month_str
-            }
-
-            headers = await self._generate_stats_headers(api, json.dumps(payload))
-            try:
-                async with self._session.post(url=api, json=payload, headers=headers) as response:
-                    text = await response.text()
-                    if not text:
-                        continue
-
-                    content = json.loads(text)
-                    # Fail fast on auth errors so callers can mark sensors unavailable
-                    if i == 0:
-                        self._raise_if_stats_unauthorized(content, 'yearly monthly consumption')
-                    if content.get('retCode') != '1000':
-                        continue
-
-                    if not content.get('data') or not content['data'][0].get('indexList'):
-                        continue
-
-                    index_item = content['data'][0]['indexList'][0]
-                    monthly_data.append({
-                        'waterConsumption': float(index_item.get('waterConsumption', 0)),
-                        'gasConsumption': float(index_item.get('gasConsumption', 0)),
-                        'month': index_item.get('statisticsDt', month_str)
-                    })
-            except HaierUnauthorizedException:
-                raise
-            except Exception:
-                _LOGGER.exception('Failed to fetch monthly data for %s', month_str)
-                continue
-
-        return monthly_data
-
-    async def _generate_stats_headers(self, api, body=''):
+    def _stats_credential_candidates(self) -> list[tuple[str, str, str]]:
         """
-        大数据用量接口鉴权头。
+        用量接口签名凭证候选。
 
-        与设备控制不同：data.haier.net 始终要求微信小程序 appId/appKey 签名
-        （与 8506d56 及之前行为一致）。若跟随 app_source 使用 App 凭证，
-        会返回 retCode=10401 UNAUTHORIZED。
+        历史可用版本（8506d56）固定使用微信小程序 appId；账号密码登录后
+        token 来自 App，部分账号需用 App 凭证。按顺序尝试，避免单一来源 401。
         """
+        wx_id, wx_key = APP_SOURCES[APP_SOURCE_WXAPP]
+        candidates = [('wxapp', wx_id, wx_key)]
+        if (self._app_id, self._app_key) != (wx_id, wx_key):
+            candidates.append(('account', self._app_id, self._app_key))
+        return candidates
+
+    async def _generate_stats_headers(self, api, body='', app_id: str = None, app_key: str = None):
         timestamp = str(int(time.time() * 1000))
         sequence_id = time.strftime('%Y%m%d%H%M%S') + str(random.randint(100000, 999999))
-        stats_app_id, stats_app_key = APP_SOURCES[APP_SOURCE_WXAPP]
+        stats_app_id = app_id or APP_SOURCES[APP_SOURCE_WXAPP][0]
+        stats_app_key = app_key or APP_SOURCES[APP_SOURCE_WXAPP][1]
 
         return {
             'accessToken': self._token,
@@ -510,6 +388,188 @@ class HaierClient:
             'language': 'zh-cn',
             'Access-User-Token': self._access_user_token,
         }
+
+    @retry_on_exception(exceptions=(aiohttp.ClientError, asyncio.TimeoutError))
+    async def get_consumption_data(self, device_id: str, api: str) -> dict:
+        payload = {
+            'mac': device_id
+        }
+        body = json.dumps(payload)
+        last_unauthorized = None
+        last_error = None
+
+        for source, app_id, app_key in self._stats_credential_candidates():
+            headers = await self._generate_stats_headers(api, body, app_id, app_key)
+            _LOGGER.debug(
+                'STATS REQUEST [%s]: %s payload=%s headers=%s',
+                source, api, body, _redact_headers(headers),
+            )
+            async with self._session.post(url=api, json=payload, headers=headers) as response:
+                text = await response.text()
+                _LOGGER.debug(
+                    'STATS RESPONSE [%s]: status=%d body_len=%d text=%s',
+                    source, response.status, len(text), text[:300] if text else '(empty)',
+                )
+                if not text:
+                    return {'indexList': [], 'unit': None}
+
+                content = json.loads(text)
+                _LOGGER.debug(
+                    'STATS PARSED [%s]: retCode=%s data_count=%d',
+                    source, content.get('retCode'), len(content.get('data') or []),
+                )
+                if self._is_stats_unauthorized(content):
+                    last_unauthorized = content
+                    _LOGGER.debug(
+                        'Stats unauthorized with %s credentials, trying next candidate',
+                        source,
+                    )
+                    continue
+                if content.get('retCode') != '1000':
+                    last_error = content.get('retInfo')
+                    raise HaierClientException(
+                        'Error getting consumption data: {}'.format(content.get('retInfo'))
+                    )
+
+                if not content.get('data'):
+                    return {'indexList': [], 'unit': None}
+
+                return {
+                    'indexList': content['data'][0].get('indexList', []),
+                    'unit': content['data'][0].get('unit')
+                }
+
+        if last_unauthorized is not None:
+            raise HaierUnauthorizedException(
+                'consumption unauthorized (retCode={}, retInfo={}). '
+                'Tried wxapp/account stats credentials.'.format(
+                    last_unauthorized.get('retCode'), last_unauthorized.get('retInfo')
+                )
+            )
+        raise HaierClientException('Error getting consumption data: {}'.format(last_error))
+
+    @retry_on_exception(exceptions=(aiohttp.ClientError, asyncio.TimeoutError))
+    async def get_monthly_consumption_data(self, device_id: str, api: str, month: str = None) -> dict:
+        if month is None:
+            from datetime import datetime
+            now = datetime.now()
+            month = now.strftime('%Y%m')
+
+        payload = {
+            'mac': device_id,
+            'month': month
+        }
+        body = json.dumps(payload)
+        last_unauthorized = None
+
+        for source, app_id, app_key in self._stats_credential_candidates():
+            headers = await self._generate_stats_headers(api, body, app_id, app_key)
+            _LOGGER.debug(
+                'MONTHLY STATS REQUEST [%s]: %s payload=%s headers=%s',
+                source, api, body, _redact_headers(headers),
+            )
+            async with self._session.post(url=api, json=payload, headers=headers) as response:
+                text = await response.text()
+                _LOGGER.debug(
+                    'MONTHLY STATS RESPONSE [%s]: status=%d body_len=%d text=%s',
+                    source, response.status, len(text), text[:300] if text else '(empty)',
+                )
+                if not text:
+                    return {'waterConsumption': 0, 'gasConsumption': 0, 'month': month}
+
+                content = json.loads(text)
+                _LOGGER.debug('MONTHLY STATS PARSED [%s]: retCode=%s', source, content.get('retCode'))
+                if self._is_stats_unauthorized(content):
+                    last_unauthorized = content
+                    continue
+                if content.get('retCode') != '1000':
+                    raise HaierClientException(
+                        'Error getting monthly consumption data: {}'.format(content.get('retInfo'))
+                    )
+
+                if not content.get('data') or not content['data'][0].get('indexList'):
+                    return {'waterConsumption': 0, 'gasConsumption': 0, 'month': month}
+
+                index_item = content['data'][0]['indexList'][0]
+                return {
+                    'waterConsumption': float(index_item.get('waterConsumption', 0)),
+                    'gasConsumption': float(index_item.get('gasConsumption', 0)),
+                    'month': index_item.get('statisticsDt', month)
+                }
+
+        if last_unauthorized is not None:
+            raise HaierUnauthorizedException(
+                'monthly consumption unauthorized (retCode={}, retInfo={})'.format(
+                    last_unauthorized.get('retCode'), last_unauthorized.get('retInfo')
+                )
+            )
+        raise HaierClientException('Error getting monthly consumption data')
+
+    @retry_on_exception(exceptions=(aiohttp.ClientError, asyncio.TimeoutError))
+    async def get_yearly_monthly_consumption(self, device_id: str, api: str) -> list:
+        from datetime import datetime
+        now = datetime.now()
+        monthly_data = []
+        # Resolve working credentials on the first month, then reuse
+        credential = None
+
+        for i in range(12):
+            target_date = now - relativedelta(months=i)
+            month_str = target_date.strftime('%Y%m')
+
+            payload = {
+                'mac': device_id,
+                'month': month_str
+            }
+            body = json.dumps(payload)
+
+            try:
+                candidates = (
+                    [credential] if credential
+                    else self._stats_credential_candidates()
+                )
+                content = None
+                for source, app_id, app_key in candidates:
+                    headers = await self._generate_stats_headers(api, body, app_id, app_key)
+                    async with self._session.post(url=api, json=payload, headers=headers) as response:
+                        text = await response.text()
+                        if not text:
+                            content = None
+                            break
+
+                        parsed = json.loads(text)
+                        if i == 0 and self._is_stats_unauthorized(parsed):
+                            continue
+                        content = parsed
+                        credential = (source, app_id, app_key)
+                        break
+
+                if content is None:
+                    if i == 0:
+                        raise HaierUnauthorizedException(
+                            'yearly monthly consumption unauthorized after trying all credentials'
+                        )
+                    continue
+
+                if content.get('retCode') != '1000':
+                    continue
+
+                if not content.get('data') or not content['data'][0].get('indexList'):
+                    continue
+
+                index_item = content['data'][0]['indexList'][0]
+                monthly_data.append({
+                    'waterConsumption': float(index_item.get('waterConsumption', 0)),
+                    'gasConsumption': float(index_item.get('gasConsumption', 0)),
+                    'month': index_item.get('statisticsDt', month_str)
+                })
+            except HaierUnauthorizedException:
+                raise
+            except Exception:
+                _LOGGER.exception('Failed to fetch monthly data for %s', month_str)
+                continue
+
+        return monthly_data
 
     async def _generate_common_headers(self, api, body=''):
         """
