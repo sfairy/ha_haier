@@ -21,7 +21,6 @@ class HaierAbstractEntity(Entity, ABC):
 
     def __init__(self, device: HaierDevice, attribute: HaierAttribute):
         self._attr_unique_id = '{}.{}_{}'.format(DOMAIN, device.id, attribute.key).lower()
-        self.entity_id = self._attr_unique_id
         self._attr_should_poll = False
 
         self._attr_device_info = DeviceInfo(
@@ -85,6 +84,11 @@ class HaierAbstractEntity(Entity, ABC):
         # 监听设备在线状态
         def device_online_callback(event):
             if event.data['deviceId'] != self._device.id:
+                return
+
+            # 配置为忽略设备在线/离线状态时，可用性完全由数据和网关连接驱动，
+            # 不再随设备上线/离线变化，从而在设备离线时保留最后一次的状态
+            if self.hass.data[DOMAIN]['ignore_device_offline']:
                 return
 
             self._attr_available = event.data['online']

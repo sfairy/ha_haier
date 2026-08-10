@@ -1,23 +1,40 @@
 {
     "config": {
         "error": {
-            "auth_error": "Authentication failed"
+            "auth_error": "Authentication failed: {reason}"
         },
         "step": {
             "user": {
+                "title": "Connect Haier",
+                "description": "Choose a sign-in method.",
+                "menu_options": {
+                    "phone_login": "Sign in by automatically getting a token with your account and password (recommended)",
+                    "manual": "Sign in with a manually entered token (advanced)"
+                }
+            },
+            "manual": {
+                "title": "Connect Haier",
+                "description": "Enter your Client ID and a valid refresh token.",
                 "data": {
                     "client_id": "Client Id",
                     "refresh_token": "Refresh Token",
-                    "default_load_all_entity": "Default load all entity"
-                },
-                "description": "Enter your Haier Smart Home token.",
-                "title": "Configure account information"
+                    "app_source": "Token source",
+                    "access_user_token": "Access User Token"
+                }
+            },
+            "phone_login": {
+                "title": "Connect Haier",
+                "description": "Enter your Haier Smart Home account phone number and password. Your password is used only for this sign-in and is not saved to Home Assistant.",
+                "data": {
+                    "phone": "Phone number",
+                    "password": "Password"
+                }
             }
         }
     },
     "options": {
         "error": {
-            "auth_error": "Authentication failed"
+            "auth_error": "Authentication failed: {reason}"
         },
         "step": {
             "init": {
@@ -25,15 +42,42 @@
                     "account": "Update account",
                     "device": "Device Filter",
                     "entity_device_selector": "Entity Filter",
+                    "preferences": "Preferences",
                     "entity_names": "Entity Names"
                 }
             },
             "account": {
-                "title": "Account information",
+                "title": "Update account",
+                "description": "Choose a sign-in method.",
+                "menu_options": {
+                    "account_phone_login": "Sign in by automatically getting a token with your account and password (recommended)",
+                    "account_manual": "Sign in with a manually entered token (advanced)"
+                }
+            },
+            "account_phone_login": {
+                "title": "Update account",
+                "description": "Enter your Haier Smart Home account phone number and password. Your password is used only for this sign-in and is not saved to Home Assistant.",
+                "data": {
+                    "phone": "Phone number",
+                    "password": "Password"
+                }
+            },
+            "account_manual": {
+                "title": "Update account",
+                "description": "Enter your Client ID and a valid refresh token.",
                 "data": {
                     "client_id": "Client Id",
                     "refresh_token": "Refresh Token",
-                    "default_load_all_entity": "Default load all entity"
+                    "app_source": "Token source",
+                    "access_user_token": "Access User Token"
+                }
+            },
+            "preferences": {
+                "title": "Preferences",
+                "description": "Configure common integration options.",
+                "data": {
+                    "default_load_all_entity": "Load all entities by default",
+                    "ignore_device_offline": "Ignore offline device status (keep the last state while offline)"
                 }
             },
             "device": {

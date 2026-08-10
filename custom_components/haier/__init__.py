@@ -4,15 +4,23 @@ from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.device_registry import DeviceEntry
 from homeassistant.helpers.event import async_track_time_interval
 
 from .const import DOMAIN, SUPPORTED_PLATFORMS, FILTER_TYPE_EXCLUDE, FILTER_TYPE_INCLUDE
 from .core.client import HaierClient, HaierClientException, TokenInfo
-from .core.config import AccountConfig, DeviceFilterConfig, EntityFilterConfig, EntityNameConfig
+from .core.config import AccountConfig, DeviceFilterConfig, EntityFilterConfig, EntityNameConfig, PreferencesConfig
 from .core.device_gateway import HaierDeviceGateway
+from .core.migration import CONFIG_ENTRY_MIGRATOR
 
 _LOGGER = logging.getLogger(__name__)
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """迁移旧版配置。"""
+    return CONFIG_ENTRY_MIGRATOR.migrate(hass, entry)
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     entity_name_cfg = EntityNameConfig(hass, entry)
@@ -26,24 +34,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     })
 
     # 定时更新token
-    hass.data[DOMAIN]['cancel_token_updater'] = await token_updater(hass, entry)
+    try:
+        hass.data[DOMAIN]['cancel_token_updater'] = await token_updater(hass, entry)
+    except HaierClientException as err:
+        raise ConfigEntryNotReady('Haier authentication failed') from err
 
     account_cfg = AccountConfig(hass, entry)
-    client = HaierClient(hass, account_cfg.client_id, account_cfg.token, account_cfg.access_user_token)
+    preferences_cfg = PreferencesConfig(hass, entry)
+    client = HaierClient(hass, account_cfg.client_id, account_cfg.token, account_cfg.access_user_token, account_cfg.app_source)
     hass.data[DOMAIN]['client'] = client
+
+    # 是否忽略设备离线状态，供实体在收到离线事件时判断是否保留最后状态
+    hass.data[DOMAIN]['ignore_device_offline'] = preferences_cfg.ignore_device_offline
 
     devices = await client.get_devices()
     _LOGGER.info('共获取到{}个设备'.format(len(devices)))
     hass.data[DOMAIN]['devices'] = devices
 
-    # 启动网关
+    await hass.config_entries.async_forward_entry_setups(entry, SUPPORTED_PLATFORMS)
+
+    # 实体完成注册后再启动网关，避免初始快照事件无人监听。
     gateway = HaierDeviceGateway(hass, client, account_cfg.token)
     hass.data[DOMAIN]['gateway_task'] = hass.async_create_background_task(
         gateway.connect(devices),
         'haier-gateway'
     )
-
-    await hass.config_entries.async_forward_entry_setups(entry, SUPPORTED_PLATFORMS)
 
     entry.async_on_unload(entry.add_update_listener(entry_update_listener))
 
@@ -64,7 +79,7 @@ async def token_updater(hass: HomeAssistant, entry: ConfigEntry):
         _LOGGER.debug("try update token...")
 
         cfg = AccountConfig(hass, entry)
-        client = HaierClient(hass, cfg.client_id, cfg.token)
+        client = HaierClient(hass, cfg.client_id, cfg.token, cfg.access_user_token, cfg.app_source)
 
         token_valid = True
         try:

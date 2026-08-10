@@ -1,5 +1,6 @@
 import logging
 import time
+from dataclasses import dataclass
 from typing import Any, Dict
 
 import voluptuous as vol
@@ -8,56 +9,203 @@ from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.config_validation import multi_select
 
-from .const import DOMAIN, FILTER_TYPE_EXCLUDE, FILTER_TYPE_INCLUDE
-from .core.client import HaierClientException, HaierClient
-from .core.config import AccountConfig, DeviceFilterConfig, EntityFilterConfig, EntityNameConfig
+from .const import (
+    CONFIG_ENTRY_VERSION,
+    DOMAIN,
+    FILTER_TYPE_EXCLUDE,
+    FILTER_TYPE_INCLUDE,
+)
+from .core.client import (
+    APP_SOURCE_APP,
+    APP_SOURCE_WXAPP,
+    DEFAULT_APP_SOURCE,
+    HaierClient,
+    HaierClientException,
+)
+from .core.config import (
+    AccountConfig,
+    DeviceFilterConfig,
+    EntityFilterConfig,
+    EntityNameConfig,
+    PreferencesConfig,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 CLIENT_ID = 'client_id'
 REFRESH_TOKEN = 'refresh_token'
+APP_SOURCE = 'app_source'
+ACCESS_USER_TOKEN = 'access_user_token'
 
-class HaierConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    VERSION = 2
-    
-    ACCESS_USER_TOKEN = 'access_user_token'
+APP_SOURCE_OPTIONS = {
+    APP_SOURCE_WXAPP: '微信小程序',
+    APP_SOURCE_APP: 'App',
+}
 
-    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        errors: Dict[str, str] = {}
+
+@dataclass(frozen=True)
+class AuthenticationResult:
+    """认证成功结果。"""
+
+    account: dict[str, Any]
+    mobile: str
+
+
+class LoginFlowMixin:
+    """复用登录方式菜单、表单和认证处理。"""
+
+    async def _async_phone_login_form(
+        self,
+        step_id: str,
+        user_input: dict[str, Any] | None,
+    ) -> FlowResult | AuthenticationResult:
+        errors: dict[str, str] = {}
+        description_placeholders: dict[str, str] = {}
+
         if user_input is not None:
             try:
-                # 根据refresh_token获取token
-                client = HaierClient(self.hass, user_input[CLIENT_ID], '')
-                token_info = await client.refresh_token(user_input[REFRESH_TOKEN])
-                # 获取用户信息
-                client = HaierClient(self.hass, user_input[CLIENT_ID], token_info.token)
+                phone = user_input['phone']
+                client = HaierClient(self.hass, phone, '', app_source=APP_SOURCE_APP)
+                token_info = await client.phone_login(
+                    phone, user_input['password']
+                )
+                client = HaierClient(
+                    self.hass, phone, token_info.token, app_source=APP_SOURCE_APP
+                )
                 user_info = await client.get_user_info()
 
-                return self.async_create_entry(title="Haier - {}".format(user_info['mobile']), data={
-                    'account': {
-                        'client_id': user_input[CLIENT_ID],
+                return AuthenticationResult(
+                    account={
+                        'client_id': phone,
                         'token': token_info.token,
                         'refresh_token': token_info.refresh_token,
                         'expires_at': int(time.time()) + token_info.expires_in,
-                        'default_load_all_entity': user_input['default_load_all_entity'],
-                        'access_user_token': user_input.get(self.ACCESS_USER_TOKEN, '')
-                    }
-                })
+                        'app_source': APP_SOURCE_APP,
+                        'access_user_token': '',
+                    },
+                    mobile=user_info['mobile']
+                )
             except HaierClientException as e:
                 _LOGGER.warning(str(e))
                 errors['base'] = 'auth_error'
+                description_placeholders['reason'] = str(e)
 
         return self.async_show_form(
-            step_id="user",
+            step_id=step_id,
             data_schema=vol.Schema(
                 {
-                    vol.Required(CLIENT_ID): str,
-                    vol.Required(REFRESH_TOKEN): str,
-                    vol.Optional(self.ACCESS_USER_TOKEN): str,
-                    vol.Required('default_load_all_entity', default=True): bool,
+                    vol.Required('phone'): str,
+                    vol.Required('password'): str,
                 }
             ),
-            errors=errors
+            errors=errors,
+            description_placeholders=description_placeholders
+        )
+
+    async def _async_manual_login_form(
+        self,
+        step_id: str,
+        user_input: dict[str, Any] | None,
+        default_client_id: str | None = None,
+        default_refresh_token: str | None = None,
+        default_app_source: str = DEFAULT_APP_SOURCE,
+        default_access_user_token: str = '',
+    ) -> FlowResult | AuthenticationResult:
+        errors: dict[str, str] = {}
+        description_placeholders: dict[str, str] = {}
+
+        if user_input is not None:
+            try:
+                client_id = user_input[CLIENT_ID]
+                app_source = user_input[APP_SOURCE]
+                client = HaierClient(self.hass, client_id, '', app_source=app_source)
+                token_info = await client.refresh_token(
+                    user_input[REFRESH_TOKEN]
+                )
+                client = HaierClient(
+                    self.hass, client_id, token_info.token, app_source=app_source
+                )
+                user_info = await client.get_user_info()
+
+                return AuthenticationResult(
+                    account={
+                        'client_id': client_id,
+                        'token': token_info.token,
+                        'refresh_token': token_info.refresh_token,
+                        'expires_at': int(time.time()) + token_info.expires_in,
+                        'app_source': app_source,
+                        'access_user_token': user_input.get(ACCESS_USER_TOKEN, ''),
+                    },
+                    mobile=user_info['mobile']
+                )
+            except HaierClientException as e:
+                _LOGGER.warning(str(e))
+                errors['base'] = 'auth_error'
+                description_placeholders['reason'] = str(e)
+
+        client_id_field = (
+            vol.Required(CLIENT_ID)
+            if default_client_id is None
+            else vol.Required(CLIENT_ID, default=default_client_id)
+        )
+        refresh_token_field = (
+            vol.Required(REFRESH_TOKEN)
+            if default_refresh_token is None
+            else vol.Required(REFRESH_TOKEN, default=default_refresh_token)
+        )
+        return self.async_show_form(
+            step_id=step_id,
+            data_schema=vol.Schema(
+                {
+                    client_id_field: str,
+                    refresh_token_field: str,
+                    vol.Required(
+                        APP_SOURCE, default=default_app_source
+                    ): vol.In(APP_SOURCE_OPTIONS),
+                    vol.Optional(
+                        ACCESS_USER_TOKEN, default=default_access_user_token
+                    ): str,
+                }
+            ),
+            errors=errors,
+            description_placeholders=description_placeholders
+        )
+
+
+class HaierConfigFlow(LoginFlowMixin, config_entries.ConfigFlow, domain=DOMAIN):
+    VERSION = CONFIG_ENTRY_VERSION
+
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """选择登录方式"""
+        return self.async_show_menu(
+            step_id="user",
+            menu_options=['phone_login', 'manual']
+        )
+
+    async def async_step_manual(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """手动填写 Token 登录"""
+        result = await self._async_manual_login_form('manual', user_input)
+        if not isinstance(result, AuthenticationResult):
+            return result
+
+        return self.async_create_entry(
+            title="Haier - {}".format(result.mobile),
+            data={
+                'account': result.account
+            }
+        )
+
+    async def async_step_phone_login(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """手机号+密码登录"""
+        result = await self._async_phone_login_form('phone_login', user_input)
+        if not isinstance(result, AuthenticationResult):
+            return result
+
+        return self.async_create_entry(
+            title="Haier - {}".format(result.mobile),
+            data={
+                'account': result.account
+            }
         )
 
     @staticmethod
@@ -66,7 +214,7 @@ class HaierConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return OptionsFlowHandler(config_entry)
 
 
-class OptionsFlowHandler(config_entries.OptionsFlow):
+class OptionsFlowHandler(LoginFlowMixin, config_entries.OptionsFlow):
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         self._config_entry = config_entry
 
@@ -78,54 +226,92 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         """
         return self.async_show_menu(
             step_id="init",
-            menu_options=['account', 'device', 'entity_device_selector', 'entity_names']
+            menu_options=['account', 'device', 'entity_device_selector', 'entity_names', 'preferences']
         )
 
-    async def async_step_account(self,  user_input: dict[str, Any] | None = None) -> FlowResult:
-        """
-        账号设置
-        :param user_input:
-        :return:
-        """
-        errors: Dict[str, str] = {}
+    async def async_step_account(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """选择账户登录方式。"""
+        return self.async_show_menu(
+            step_id="account",
+            menu_options=['account_phone_login', 'account_manual']
+        )
 
+    async def _async_save_account_authentication(
+        self, result: AuthenticationResult
+    ) -> FlowResult:
+        """保存更新后的账户认证信息。"""
         cfg = AccountConfig(self.hass, self.config_entry)
+        cfg.client_id = result.account['client_id']
+        cfg.token = result.account['token']
+        cfg.refresh_token = result.account['refresh_token']
+        cfg.expires_at = result.account['expires_at']
+        cfg.app_source = result.account['app_source']
+        cfg.access_user_token = result.account.get('access_user_token', '')
+        cfg.save(result.mobile)
+
+        await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+
+        return self.async_create_entry(title='', data={})
+
+    async def async_step_account_phone_login(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """使用手机号和密码更新账户。"""
+        result = await self._async_phone_login_form(
+            'account_phone_login', user_input
+        )
+        if not isinstance(result, AuthenticationResult):
+            return result
+
+        return await self._async_save_account_authentication(result)
+
+    async def async_step_account_manual(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """使用 Refresh Token 更新账户。"""
+        cfg = AccountConfig(self.hass, self.config_entry)
+        result = await self._async_manual_login_form(
+            'account_manual',
+            user_input,
+            default_client_id=cfg.client_id,
+            default_refresh_token=cfg.refresh_token,
+            default_app_source=cfg.app_source,
+            default_access_user_token=cfg.access_user_token
+        )
+        if not isinstance(result, AuthenticationResult):
+            return result
+
+        return await self._async_save_account_authentication(result)
+
+    async def async_step_preferences(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """偏好设置。"""
+        cfg = PreferencesConfig(self.hass, self.config_entry)
 
         if user_input is not None:
-            try:
-                # 根据refresh_token获取token
-                client = HaierClient(self.hass, user_input[CLIENT_ID], '')
-                token_info = await client.refresh_token(user_input[REFRESH_TOKEN])
-                # 获取用户信息
-                client = HaierClient(self.hass, user_input[CLIENT_ID], token_info.token)
-                user_info = await client.get_user_info()
+            cfg.default_load_all_entity = user_input['default_load_all_entity']
+            cfg.ignore_device_offline = user_input['ignore_device_offline']
+            cfg.save()
 
-                cfg.client_id = user_input[CLIENT_ID]
-                cfg.token = token_info.token
-                cfg.refresh_token = token_info.refresh_token
-                cfg.expires_at = int(time.time()) + token_info.expires_in
-                cfg.default_load_all_entity = user_input['default_load_all_entity']
-                cfg.access_user_token = user_input.get('access_user_token', '')
-                cfg.save(user_info['mobile'])
+            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
 
-                await self.hass.config_entries.async_reload(self.config_entry.entry_id)
-
-                return self.async_create_entry(title='', data={})
-            except HaierClientException as e:
-                _LOGGER.warning(str(e))
-                errors['base'] = 'auth_error'
+            return self.async_create_entry(title='', data={})
 
         return self.async_show_form(
-            step_id="account",
+            step_id="preferences",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CLIENT_ID, default=cfg.client_id): str,
-                    vol.Required(REFRESH_TOKEN, default=cfg.refresh_token): str,
-                    vol.Optional('access_user_token', default=cfg.access_user_token): str,
-                    vol.Required('default_load_all_entity', default=cfg.default_load_all_entity): bool,
+                    vol.Required(
+                        'default_load_all_entity',
+                        default=cfg.default_load_all_entity
+                    ): bool,
+                    vol.Required(
+                        'ignore_device_offline',
+                        default=cfg.ignore_device_offline
+                    ): bool,
                 }
-            ),
-            errors=errors
+            )
         )
 
     async def async_step_device(self,  user_input: dict[str, Any] | None = None) -> FlowResult:
@@ -289,4 +475,3 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 'device_name': target_device.name,
             }
         )
-
