@@ -41,12 +41,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          if gh release view "${{ steps.meta.outputs.tag }}" >/dev/null 2>&1; then
+          VERSION="${{ steps.meta.outputs.version }}"
+          TAG="${{ steps.meta.outputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1 || gh release view "$VERSION" >/dev/null 2>&1; then
             echo "exists=true" >> "${GITHUB_OUTPUT}"
-            echo "Release ${{ steps.meta.outputs.tag }} already exists"
+            echo "Release for ${VERSION} already exists"
           else
             echo "exists=false" >> "${GITHUB_OUTPUT}"
-            echo "Release ${{ steps.meta.outputs.tag }} will be created"
+            echo "Release ${TAG} will be created"
           fi
 
       - name: Ensure tag exists
