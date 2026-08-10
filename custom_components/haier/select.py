@@ -33,21 +33,26 @@ class HaierSelect(HaierAbstractEntity, SelectEntity):
 
     def _update_value(self):
         data_key = self._attribute.ext.get('data_key', self._attribute.key)
-        self._attr_current_option = self._get_value_from_comparison_table(self._attributes_data[data_key])
+        mapped = self._map_comparison_value(self._attributes_data.get(data_key))
+        options = list(self._attr_options or [])
+        # Out-of-range device values (e.g. windSpeedLevel=0) must not become current_option
+        self._attr_current_option = mapped if mapped in options else None
 
     def select_option(self, option: str) -> None:
         data_key = self._attribute.ext.get('data_key', self._attribute.key)
         self._attr_current_option = option
         self._send_command({
-            data_key: self._get_value_from_comparison_table(option)
+            data_key: self._map_comparison_value(option, fallback=option)
         })
 
-    def _get_value_from_comparison_table(self, value):
+    def _map_comparison_value(self, value, fallback=None):
         value_comparison_table = self._attribute.ext.get('value_comparison_table', {})
-        if str(value) not in value_comparison_table:
-            _LOGGER.warning('Device [{}] attribute [{}] value [{}] not recognizable'.format(
-                self._device.id, self._attribute.key, value
-            ))
-            return value
+        key = str(value)
+        if key not in value_comparison_table:
+            _LOGGER.debug(
+                'Device [%s] attribute [%s] value [%s] not in comparison table',
+                self._device.id, self._attribute.key, value,
+            )
+            return fallback
 
-        return value_comparison_table.get(str(value))
+        return value_comparison_table.get(key)

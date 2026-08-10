@@ -18,6 +18,7 @@ from .core.client import (
     GAS_30DAY_API,
     GAS_YEAR_API,
     MONTHLY_API,
+    HaierUnauthorizedException,
 )
 from .core.config import DeviceFilterConfig
 from .core.device import HaierDevice
@@ -79,14 +80,15 @@ class HaierConsumptionSensor(SensorEntity):
         self._api_url = api_url
         self._field_name = field_name
         self._remove_tracker = None
-        self._attr_available = True
         self._divide_by = divide_by
         self._calc_mode = calc_mode
 
         il = initial_index_list or []
         self._index_list = il
-        self._attr_native_value = self._calculate_value(il, calc_mode)
+        self._attr_native_value = self._calculate_value(il, calc_mode) if initial_index_list is not None else None
         self._unit = display_unit
+        # None initial_index_list means pre-fetch failed (e.g. unauthorized)
+        self._attr_available = initial_index_list is not None
 
         self._attr_unique_id = '{}.{}_{}'.format(DOMAIN, device.id.lower(), key).lower()
         self._attr_name = name
@@ -132,7 +134,12 @@ class HaierConsumptionSensor(SensorEntity):
             index_list = data.get('indexList', [])
             self._attr_native_value = self._calculate_value(index_list, self._calc_mode)
             self._index_list = index_list
+            self._attr_available = True
+        except HaierUnauthorizedException as err:
+            self._attr_available = False
+            _LOGGER.warning('Stats unauthorized for [%s] device %s: %s', self._key, self._device_id, err)
         except Exception:
+            self._attr_available = False
             _LOGGER.exception('Failed to fetch [%s] for device %s', self._key, self._device_id)
 
     @property
@@ -177,10 +184,16 @@ async def _async_setup_consumption_sensors(hass, entry, async_add_entities):
         for key, name, api, field, device_class, divide_by, display_unit, calc_mode in DAILY_YEARLY_SENSOR_DEFS:
             try:
                 data = await client.get_consumption_data(device.id, api)
+                index_list = data.get('indexList')
+            except HaierUnauthorizedException as err:
+                _LOGGER.warning(
+                    'Stats unauthorized pre-fetching [%s] for device %s: %s',
+                    key, device.id, err,
+                )
+                index_list = None
             except Exception:
                 _LOGGER.exception('Failed to pre-fetch [%s] for device %s', key, device.id)
-                data = {'indexList': None, 'unit': None}
-            index_list = data.get('indexList')
+                index_list = None
             entities.append(HaierConsumptionSensor(client, device, key, name, device_class, api, field, index_list, divide_by, display_unit, calc_mode))
 
     if entities:
@@ -199,11 +212,11 @@ class HaierMonthlyConsumptionSensor(SensorEntity):
         self._api_url = api_url
         self._field_name = field_name
         self._remove_tracker = None
-        self._attr_available = True
         self._divide_by = divide_by
 
         self._monthly_list = initial_monthly_list or []
-        self._attr_native_value = self._find_latest_nonzero()
+        self._attr_native_value = self._find_latest_nonzero() if initial_monthly_list is not None else None
+        self._attr_available = initial_monthly_list is not None
 
         self._attr_unique_id = '{}.{}_{}'.format(DOMAIN, device.id.lower(), key).lower()
         self._attr_name = name
@@ -227,7 +240,12 @@ class HaierMonthlyConsumptionSensor(SensorEntity):
             monthly_list = await self._client.get_yearly_monthly_consumption(self._device_id, self._api_url)
             self._monthly_list = monthly_list
             self._attr_native_value = self._find_latest_nonzero()
+            self._attr_available = True
+        except HaierUnauthorizedException as err:
+            self._attr_available = False
+            _LOGGER.warning('Stats unauthorized for monthly [%s] device %s: %s', self._key, self._device_id, err)
         except Exception:
+            self._attr_available = False
             _LOGGER.exception('Failed to fetch monthly [%s] for device %s', self._key, self._device_id)
 
     @property
@@ -276,6 +294,12 @@ async def _async_setup_monthly_sensors(hass, entry, async_add_entities):
         for key, name, api, field, device_class, divide_by, display_unit in MONTHLY_SENSOR_DEFS:
             try:
                 monthly_list = await client.get_yearly_monthly_consumption(device.id, api)
+            except HaierUnauthorizedException as err:
+                _LOGGER.warning(
+                    'Stats unauthorized pre-fetching monthly [%s] for device %s: %s',
+                    key, device.id, err,
+                )
+                monthly_list = None
             except Exception:
                 _LOGGER.exception('Failed to pre-fetch monthly [%s] for device %s', key, device.id)
                 monthly_list = None

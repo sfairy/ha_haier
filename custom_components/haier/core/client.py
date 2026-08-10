@@ -112,6 +112,29 @@ class HaierClientException(Exception):
     pass
 
 
+class HaierUnauthorizedException(HaierClientException):
+    """Stats / bigdata API rejected the token (e.g. retCode 10401)."""
+
+
+_SENSITIVE_HEADER_KEYS = frozenset({
+    'accessToken',
+    'Access-User-Token',
+    'appKey',
+    'sign',
+})
+
+
+def _redact_headers(headers: dict) -> dict:
+    redacted = {}
+    for key, value in headers.items():
+        if key in _SENSITIVE_HEADER_KEYS and value:
+            text = str(value)
+            redacted[key] = f'{text[:4]}***{text[-4:]}' if len(text) > 8 else '***'
+        else:
+            redacted[key] = value
+    return redacted
+
+
 class HaierClient:
 
     def __init__(self, hass: HomeAssistant, client_id: str, token: str, access_user_token: str = None, app_source: str = DEFAULT_APP_SOURCE):
@@ -329,6 +352,16 @@ class HaierClient:
 
             return content['agAddr'].replace('http://', 'wss://')
 
+    @staticmethod
+    def _raise_if_stats_unauthorized(content: dict, context: str):
+        ret_code = str(content.get('retCode', ''))
+        ret_info = content.get('retInfo')
+        if ret_code in ('10401', '401') or str(ret_info).upper() == 'UNAUTHORIZED':
+            raise HaierUnauthorizedException(
+                f'{context} unauthorized (retCode={ret_code}, retInfo={ret_info}). '
+                'Check Access User Token / app source match for bigdata APIs.'
+            )
+
     @retry_on_exception(exceptions=(aiohttp.ClientError, asyncio.TimeoutError))
     async def get_consumption_data(self, device_id: str, api: str) -> dict:
         payload = {
@@ -336,16 +369,25 @@ class HaierClient:
         }
 
         headers = await self._generate_stats_headers(api, json.dumps(payload))
-        _LOGGER.warning(">>> STATS REQUEST: %s payload=%s headers=%s", api, json.dumps(payload), json.dumps({k:v for k,v in headers.items() if k != 'sign'}))
+        _LOGGER.debug(
+            'STATS REQUEST: %s payload=%s headers=%s',
+            api, json.dumps(payload), _redact_headers(headers),
+        )
         async with self._session.post(url=api, json=payload, headers=headers) as response:
-            status = response.status
             text = await response.text()
-            _LOGGER.warning(">>> STATS RESPONSE: status=%d body_len=%d text=%s", status, len(text), text[:300] if text else '(empty)')
+            _LOGGER.debug(
+                'STATS RESPONSE: status=%d body_len=%d text=%s',
+                response.status, len(text), text[:300] if text else '(empty)',
+            )
             if not text:
                 return {'indexList': [], 'unit': None}
 
             content = json.loads(text)
-            _LOGGER.warning(">>> STATS PARSED: retCode=%s data_count=%d", content.get('retCode'), len(content.get('data', [])))
+            _LOGGER.debug(
+                'STATS PARSED: retCode=%s data_count=%d',
+                content.get('retCode'), len(content.get('data') or []),
+            )
+            self._raise_if_stats_unauthorized(content, 'consumption')
             if content.get('retCode') != '1000':
                 raise HaierClientException('Error getting consumption data: {}'.format(content.get('retInfo')))
 
@@ -370,16 +412,22 @@ class HaierClient:
         }
 
         headers = await self._generate_stats_headers(api, json.dumps(payload))
-        _LOGGER.warning(">>> MONTHLY STATS REQUEST: %s payload=%s headers=%s", api, json.dumps(payload), json.dumps({k:v for k,v in headers.items() if k != 'sign'}))
+        _LOGGER.debug(
+            'MONTHLY STATS REQUEST: %s payload=%s headers=%s',
+            api, json.dumps(payload), _redact_headers(headers),
+        )
         async with self._session.post(url=api, json=payload, headers=headers) as response:
-            status = response.status
             text = await response.text()
-            _LOGGER.warning(">>> MONTHLY STATS RESPONSE: status=%d body_len=%d text=%s", status, len(text), text[:300] if text else '(empty)')
+            _LOGGER.debug(
+                'MONTHLY STATS RESPONSE: status=%d body_len=%d text=%s',
+                response.status, len(text), text[:300] if text else '(empty)',
+            )
             if not text:
                 return {'waterConsumption': 0, 'gasConsumption': 0, 'month': month}
 
             content = json.loads(text)
-            _LOGGER.warning(">>> MONTHLY STATS PARSED: retCode=%s", content.get('retCode'))
+            _LOGGER.debug('MONTHLY STATS PARSED: retCode=%s', content.get('retCode'))
+            self._raise_if_stats_unauthorized(content, 'monthly consumption')
             if content.get('retCode') != '1000':
                 raise HaierClientException('Error getting monthly consumption data: {}'.format(content.get('retInfo')))
 
@@ -416,6 +464,9 @@ class HaierClient:
                         continue
 
                     content = json.loads(text)
+                    # Fail fast on auth errors so callers can mark sensors unavailable
+                    if i == 0:
+                        self._raise_if_stats_unauthorized(content, 'yearly monthly consumption')
                     if content.get('retCode') != '1000':
                         continue
 
@@ -428,6 +479,8 @@ class HaierClient:
                         'gasConsumption': float(index_item.get('gasConsumption', 0)),
                         'month': index_item.get('statisticsDt', month_str)
                     })
+            except HaierUnauthorizedException:
+                raise
             except Exception:
                 _LOGGER.exception('Failed to fetch monthly data for %s', month_str)
                 continue

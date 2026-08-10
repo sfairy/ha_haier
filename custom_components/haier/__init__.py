@@ -106,7 +106,8 @@ async def token_updater(hass: HomeAssistant, entry: ConfigEntry):
                 cfg = AccountConfig(hass, entry)
                 client = hass.data[DOMAIN]['client']
                 client._token = cfg.token
-                client._access_user_token = cfg.access_user_token
+                # Empty access_user_token must fall back to account token (same as HaierClient.__init__)
+                client._access_user_token = cfg.access_user_token or cfg.token
                 if hass.data[DOMAIN]['gateway_task']:
                     hass.data[DOMAIN]['gateway_task'].cancel()
                 gateway = HaierDeviceGateway(hass, client, cfg.token)
