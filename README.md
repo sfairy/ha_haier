@@ -7,9 +7,11 @@
 
 ## 功能
 
-- 通过海尔账号 Token 接入云端设备
+- 账号密码登录，或手动填写 Token 接入云端设备
+- 自动刷新 Token
 - 支持平台：`climate`、`water_heater`、`cover`、`sensor`、`binary_sensor`、`switch`、`select`、`number`
-- UI 配置流程（Config Flow）及设备/实体过滤选项
+- 燃气热水器用水 / 用气统计传感器（日、月、年）
+- UI 配置：设备筛选、实体筛选、实体名称、偏好设置
 
 ## 安装
 
@@ -34,13 +36,29 @@
 
 1. 进入 **设置 → 设备与服务 → 添加集成**
 2. 搜索 **海尔智家**
-3. 填写 `Client Id`、`Refresh Token`（可选 `Access User Token`）
-4. 按需在集成选项中配置设备过滤、实体过滤与实体名称
+3. 选择登录方式：
+   - **账号密码（推荐）**：输入海尔智家手机号和密码（密码仅用于本次登录，不会保存）
+   - **手动 Token（高级）**：填写 `Client Id`、`Refresh Token`，并选择 Token 来源（微信小程序 / App）
+4. 可选填写 `Access User Token`（用水/用气统计接口需要；见下文）
+5. 按需在集成选项中配置设备过滤、实体过滤、实体名称与偏好设置
+
+### Access User Token（用水/用气统计）
+
+设备控制一般只需要账号 Token。燃气热水器的用水/用气统计走 `data.haier.net` 大数据接口，可能额外要求 `Access-User-Token`。
+
+若日/月/年用量传感器显示 **不可用**，且日志出现 `Stats unauthorized` / `retCode=10401`：
+
+1. 用抓包工具打开海尔智家 App，进入该热水器的用水/用气统计页
+2. 找到发往 `data.haier.net/bigdata-mobile-rest/...` 的请求
+3. 复制请求头中的 `Access-User-Token`（注意可能与 `accessToken` 不同）
+4. 在集成选项 → **更新账户** → 手动 Token 中填入并保存
+
+Token 来源（`app_source`）须与抓包客户端一致，否则刷新或统计接口可能鉴权失败。
 
 ## 要求
 
 - Home Assistant ≥ 2024.1.0
-- 有效的海尔智家账号凭证（Client Id / Refresh Token）
+- 有效的海尔智家账号（手机号密码，或 Client Id / Refresh Token）
 
 ## 仓库结构
 
