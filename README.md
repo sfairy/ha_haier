@@ -44,16 +44,16 @@
 
 ### Access User Token（用水/用气统计）
 
-设备控制一般只需要账号 Token。燃气热水器的用水/用气统计走 `data.haier.net` 大数据接口，可能额外要求 `Access-User-Token`。
+设备控制使用登录时的 Token 来源（App / 微信小程序）凭证；用水/用气统计走 `data.haier.net`，签名固定使用微信小程序 `appId`（与历史可用版本一致）。
 
-若日/月/年用量传感器显示 **不可用**，且日志出现 `Stats unauthorized` / `retCode=10401`：
+若日/月/年用量传感器仍显示 **不可用**，且日志出现 `Stats unauthorized` / `retCode=10401`：
 
-1. 用抓包工具打开海尔智家 App，进入该热水器的用水/用气统计页
+1. 用抓包工具打开海尔智家，进入该热水器的用水/用气统计页
 2. 找到发往 `data.haier.net/bigdata-mobile-rest/...` 的请求
 3. 复制请求头中的 `Access-User-Token`（注意可能与 `accessToken` 不同）
 4. 在集成选项 → **更新账户** → 手动 Token 中填入并保存
 
-Token 来源（`app_source`）须与抓包客户端一致，否则刷新或统计接口可能鉴权失败。
+手动填写 Token 时，Token 来源（`app_source`）须与抓包客户端一致，否则刷新接口可能鉴权失败。
 
 ## 要求
 

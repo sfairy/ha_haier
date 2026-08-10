@@ -1,7 +1,7 @@
 {
   "domain": "haier",
   "name": "海尔智家",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "documentation": "https://github.com/sfairy/ha_haier",
   "issue_tracker": "https://github.com/sfairy/ha_haier/issues",
   "codeowners": [

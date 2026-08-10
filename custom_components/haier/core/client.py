@@ -488,16 +488,24 @@ class HaierClient:
         return monthly_data
 
     async def _generate_stats_headers(self, api, body=''):
+        """
+        大数据用量接口鉴权头。
+
+        与设备控制不同：data.haier.net 始终要求微信小程序 appId/appKey 签名
+        （与 8506d56 及之前行为一致）。若跟随 app_source 使用 App 凭证，
+        会返回 retCode=10401 UNAUTHORIZED。
+        """
         timestamp = str(int(time.time() * 1000))
         sequence_id = time.strftime('%Y%m%d%H%M%S') + str(random.randint(100000, 999999))
+        stats_app_id, stats_app_key = APP_SOURCES[APP_SOURCE_WXAPP]
 
         return {
             'accessToken': self._token,
-            'appId': self._app_id,
-            'appKey': self._app_key,
+            'appId': stats_app_id,
+            'appKey': stats_app_key,
             'clientId': self._client_id,
             'sequenceId': sequence_id,
-            'sign': self._sign(self._app_id, self._app_key, timestamp, body, api),
+            'sign': self._sign(stats_app_id, stats_app_key, timestamp, body, api),
             'timestamp': timestamp,
             'language': 'zh-cn',
             'Access-User-Token': self._access_user_token,
